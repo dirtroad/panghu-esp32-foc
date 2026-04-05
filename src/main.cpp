@@ -86,6 +86,10 @@ float motor1_velocity = 0;
 #define PWM_RESOLUTION 10
 #define PWM_MAX_DUTY 1023
 
+// 函数前向声明
+void setMotor0(float voltage);
+void setMotor1(float voltage);
+
 // IMU 状态
 float pitch_angle = 0;
 float pitch_rate = 0;
@@ -168,7 +172,8 @@ float calculateMotorVelocity(int motor_id, float pitch, float pitch_dot, float t
   // x = [pitch, pitch_dot, velocity, velocity_error]
   
   float balance_component = Kp_pitch * pitch + Kd_pitch * pitch_dot;
-  float velocity_component = 0.05 * (target_vel - (motor_id == 0 ? motor0.shaft_velocity : motor1.shaft_velocity));
+  float motor_vel = (motor_id == 0 ? motor0_velocity : motor1_velocity);
+  float velocity_component = 0.05 * (target_vel - motor_vel);
   float steering_component = 0;
   
   if (motor_id == 0) {
