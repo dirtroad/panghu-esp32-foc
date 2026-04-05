@@ -34,6 +34,7 @@
 #include "Servo_STS3032.h"
 #include "basic_web.h"
 #include <esp_task_wdt.h>
+#include <driver/ledc.h>
 
 // ==================== WiFi 配置 ====================
 const char* WIFI_SSID = "LaiAiba";
@@ -66,16 +67,24 @@ const char* WIFI_PASSWORD = "LaiAi888";
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 
-// FOC 电机对象 (SNR8503M VSP+FG 模式)
-BLDCMotor motor0 = BLDCMotor(14);  // 14 对极
-BLDCDriver2PWM driver0 = BLDCDriver2PWM(MOTOR0_VSP_PIN, MOTOR0_EN_PIN);
+// 编码器 (FG 信号输入，用 A/B 模式，只接 A 相)
+Encoder encoder0 = Encoder(MOTOR0_FG_PIN, 33, 1, 4);  // GPIO32=FG
+Encoder encoder1 = Encoder(MOTOR1_FG_PIN, 36, 1, 4);  // GPIO33=FG
 
-BLDCMotor motor1 = BLDCMotor(14);
-BLDCDriver2PWM driver1 = BLDCDriver2PWM(MOTOR1_VSP_PIN, MOTOR1_EN_PIN);
+// 电机状态
+volatile long encoder0_count = 0;
+volatile long encoder1_count = 0;
+float motor0_velocity = 0;
+float motor1_velocity = 0;
 
-// 编码器 (FG 信号输入)
-Encoder encoder0 = Encoder(MOTOR0_FG_PIN, 33, 1, 4);  // GPIO32=FG, 33=未用
-Encoder encoder1 = Encoder(MOTOR1_FG_PIN, 36, 1, 4);  // GPIO33=FG, 36=未用
+// PWM 配置 (LEDC)
+#define LEDC_TIMER_0 LEDC_TIMER_0
+#define LEDC_TIMER_1 LEDC_TIMER_1
+#define LEDC_CHANNEL_0 LEDC_CHANNEL_0
+#define LEDC_CHANNEL_1 LEDC_CHANNEL_1
+#define PWM_FREQUENCY 20000
+#define PWM_RESOLUTION 10
+#define PWM_MAX_DUTY 1023
 
 // IMU 状态
 float pitch_angle = 0;
@@ -199,24 +208,29 @@ void controlLoop() {
   if (current_time - last_control_time >= CONTROL_INTERVAL) {
     last_control_time = current_time;
     
-    // 1. 读取传感器
-    readIMU();
-    motor0.loopFOC();
-    motor1.loopFOC();
+    // 1. 读取编码器速度
+    encoder0.update();
+    encoder1.update();
+    motor0_velocity = encoder0.getVelocity();
+    motor1_velocity = encoder1.getVelocity();
     
-    // 2. 平衡控制解算
+    // 2. 读取 IMU
+    readIMU();
+    
+    // 3. 平衡控制解算
     if (stable_mode) {
       float vel0 = calculateMotorVelocity(0, pitch_angle, pitch_rate, target_velocity, target_angular);
       float vel1 = calculateMotorVelocity(1, pitch_angle, pitch_rate, target_velocity, target_angular);
       
-      motor0.move(vel0);
-      motor1.move(vel1);
+      // 转换为电压控制 (-12V ~ +12V)
+      setMotor0(vel0);
+      setMotor1(vel1);
     } else {
-      motor0.move(0);
-      motor1.move(0);
+      setMotor0(0);
+      setMotor1(0);
     }
     
-    // 3. 更新舵机
+    // 4. 更新舵机
     updateServos();
   }
 }
@@ -250,58 +264,85 @@ void setupServer() {
   Serial.println("HTTP server started");
 }
 
+// ==================== PWM 初始化 ====================
+void setupPWM() {
+  // 电机 0 PWM
+  ledcSetup(LEDC_CHANNEL_0, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcAttachPin(MOTOR0_VSP_PIN, LEDC_CHANNEL_0);
+  
+  // 电机 1 PWM
+  ledcSetup(LEDC_CHANNEL_1, PWM_FREQUENCY, PWM_RESOLUTION);
+  ledcAttachPin(MOTOR1_VSP_PIN, LEDC_CHANNEL_1);
+  
+  // 方向引脚
+  pinMode(MOTOR0_DIR_PIN, OUTPUT);
+  pinMode(MOTOR1_DIR_PIN, OUTPUT);
+  
+  // 使能引脚
+  pinMode(MOTOR0_EN_PIN, OUTPUT);
+  pinMode(MOTOR1_EN_PIN, OUTPUT);
+  digitalWrite(MOTOR0_EN_PIN, HIGH);
+  digitalWrite(MOTOR1_EN_PIN, HIGH);
+}
+
+// ==================== 电机控制 ====================
+void setMotor0(float voltage) {
+  // 限制电压范围 0-12V
+  voltage = constrain(voltage, -12, 12);
+  
+  // 设置方向
+  if (voltage >= 0) {
+    digitalWrite(MOTOR0_DIR_PIN, HIGH);
+  } else {
+    digitalWrite(MOTOR0_DIR_PIN, LOW);
+  }
+  
+  // 设置 PWM 占空比 (绝对值)
+  int duty = abs(voltage) / 12.0 * PWM_MAX_DUTY;
+  duty = constrain(duty, 0, PWM_MAX_DUTY);
+  ledcWrite(LEDC_CHANNEL_0, duty);
+}
+
+void setMotor1(float voltage) {
+  voltage = constrain(voltage, -12, 12);
+  
+  if (voltage >= 0) {
+    digitalWrite(MOTOR1_DIR_PIN, HIGH);
+  } else {
+    digitalWrite(MOTOR1_DIR_PIN, LOW);
+  }
+  
+  int duty = abs(voltage) / 12.0 * PWM_MAX_DUTY;
+  duty = constrain(duty, 0, PWM_MAX_DUTY);
+  ledcWrite(LEDC_CHANNEL_1, duty);
+}
+
 // ==================== 初始化 ====================
 void setup() {
   // 禁用看门狗
   esp_task_wdt_deinit();
   
   Serial.begin(115200);
-  Serial.println("\n=== 胖虎机器人 ESP32 固件 ===");
+  Serial.println("\n=== 胖虎机器人 ESP32 固件 (SNR8503M) ===");
   
   // 初始化舵机串口
-  Serial.println("[1/6] 初始化舵机串口...");
+  Serial.println("[1/5] 初始化舵机串口...");
   SERVO_SERIAL.begin(115200, SERIAL_8N1, SERVO_RX_PIN, SERVO_TX_PIN);
   servoController.pSerial = &SERVO_SERIAL;
   
   // 初始化编码器
-  Serial.println("[2/6] 初始化编码器...");
+  Serial.println("[2/5] 初始化编码器...");
   encoder0.init();
   encoder0.enableInterrupts(doEncoder0);
   encoder1.init();
   encoder1.enableInterrupts(doEncoder1);
   
-  // 初始化 FOC 驱动
-  Serial.println("[3/6] 初始化 FOC 驱动...");
-  driver0.pwm_frequency = 20000;
-  driver0.init();
-  motor0.linkDriver(&driver0);
-  motor0.controller = MotionControlType::velocity;
-  motor0.PID_velocity.P = 0.5;
-  motor0.PID_velocity.I = 10;
-  motor0.PID_velocity.D = 0;
-  motor0.PID_velocity.output_ramp = 1000;
-  motor0.PID_velocity.limit = 10;
-  motor0.sensor = &encoder0;
-  Serial.println("[4/6] 初始化电机 0...");
-  motor0.init();
-  motor0.initFOC();
-  
-  driver1.pwm_frequency = 20000;
-  driver1.init();
-  motor1.linkDriver(&driver1);
-  motor1.controller = MotionControlType::velocity;
-  motor1.PID_velocity.P = 0.5;
-  motor1.PID_velocity.I = 10;
-  motor1.PID_velocity.D = 0;
-  motor1.PID_velocity.output_ramp = 1000;
-  motor1.PID_velocity.limit = 10;
-  motor1.sensor = &encoder1;
-  Serial.println("[5/6] 初始化电机 1...");
-  motor1.init();
-  motor1.initFOC();
+  // 初始化 PWM 驱动
+  Serial.println("[3/5] 初始化 PWM 驱动...");
+  setupPWM();
   
   // 初始化 WiFi 和服务器
-  Serial.println("[6/6] 初始化 WiFi...");
+  Serial.println("[4/5] 初始化 WiFi...");
   setupWiFi();
   setupServer();
   
