@@ -21,8 +21,9 @@
 // -----------------------------------------------------------------------------
 
 // 胖虎机器人 ESP32 固件 - 双轮足平衡控制
-// 硬件：ESP32 + L6234 驱动 + 轮毂电机×2 + IMU
+// 硬件：ESP32-S3 + SNR8503M 电调 + 轮毂电机×2 + IMU
 // 功能：FOC 电机控制 + LQR 自平衡 + WiFi 遥控
+// 驱动模式：VSP+FG+DIR (SNR8503M)
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -39,16 +40,18 @@ const char* WIFI_SSID = "LaiAiba";
 const char* WIFI_PASSWORD = "LaiAi888";
 
 // ==================== 引脚定义 ====================
-// FOC 驱动引脚 (L6234)
-#define MOTOR0_U_PIN  25
-#define MOTOR0_V_PIN  26
-#define MOTOR0_W_PIN  27
-#define MOTOR0_EN_PIN 12
+// SNR8503M 电调驱动引脚 (VSP+FG+DIR 模式)
+// 电机 1
+#define MOTOR0_VSP_PIN    25   // PWM 速度控制
+#define MOTOR0_FG_PIN     32   // 编码器反馈
+#define MOTOR0_DIR_PIN    26   // 方向控制
+#define MOTOR0_EN_PIN     12   // 使能 (可选)
 
-#define MOTOR1_U_PIN  13
-#define MOTOR1_V_PIN  14
-#define MOTOR1_W_PIN  15
-#define MOTOR1_EN_PIN 16
+// 电机 2
+#define MOTOR1_VSP_PIN    13   // PWM 速度控制
+#define MOTOR1_FG_PIN     33   // 编码器反馈
+#define MOTOR1_DIR_PIN    14   // 方向控制
+#define MOTOR1_EN_PIN     15   // 使能 (可选)
 
 // IMU 引脚 (MPU6050 I2C)
 #define IMU_SDA_PIN   21
@@ -63,16 +66,16 @@ const char* WIFI_PASSWORD = "LaiAi888";
 WebServer server(80);
 WebSocketsServer webSocket = WebSocketsServer(81);
 
-// FOC 电机对象
+// FOC 电机对象 (SNR8503M VSP+FG 模式)
 BLDCMotor motor0 = BLDCMotor(14);  // 14 对极
-BLDCDriver3PWM driver0 = BLDCDriver3PWM(MOTOR0_U_PIN, MOTOR0_V_PIN, MOTOR0_W_PIN, MOTOR0_EN_PIN);
+BLDCDriver2PWM driver0 = BLDCDriver2PWM(MOTOR0_VSP_PIN, MOTOR0_EN_PIN);
 
 BLDCMotor motor1 = BLDCMotor(14);
-BLDCDriver3PWM driver1 = BLDCDriver3PWM(MOTOR1_U_PIN, MOTOR1_V_PIN, MOTOR1_W_PIN, MOTOR1_EN_PIN);
+BLDCDriver2PWM driver1 = BLDCDriver2PWM(MOTOR1_VSP_PIN, MOTOR1_EN_PIN);
 
-// 编码器 (使用硬件编码器或磁编码器)
-Encoder encoder0 = Encoder(32, 33, 1000, 4);  // GPIO32=A, 33=B, 1000PPR
-Encoder encoder1 = Encoder(39, 36, 1000, 4);  // GPIO39=A, 36=B
+// 编码器 (FG 信号输入)
+Encoder encoder0 = Encoder(MOTOR0_FG_PIN, 33, 1, 4);  // GPIO32=FG, 33=未用
+Encoder encoder1 = Encoder(MOTOR1_FG_PIN, 36, 1, 4);  // GPIO33=FG, 36=未用
 
 // IMU 状态
 float pitch_angle = 0;
