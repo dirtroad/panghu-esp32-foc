@@ -22,7 +22,7 @@
 
 // 胖虎机器人 ESP32 固件 - 双轮足平衡控制
 // 硬件：ESP32-S3 + SNR8503M 电调 + 轮毂电机×2 + IMU
-// 功能：FOC 电机控制 + LQR 自平衡 + WiFi 遥控
+// 功能：FOC 电机控制 + LQR 自平衡 + WiFi 遥控 + RDK X5 通讯
 // 驱动模式：VSP+FG+DIR (SNR8503M)
 
 #include <Arduino.h>
@@ -33,6 +33,7 @@
 #include <ArduinoJson.h>
 #include "Servo_STS3032.h"
 #include "basic_web.h"
+#include "rdk_comm.h"
 #include <esp_task_wdt.h>
 #include <driver/ledc.h>
 
@@ -335,19 +336,23 @@ void setup() {
   SERVO_SERIAL.begin(115200, SERIAL_8N1, SERVO_RX_PIN, SERVO_TX_PIN);
   servoController.pSerial = &SERVO_SERIAL;
   
+  // 初始化 RDK X5 通讯
+  Serial.println("[2/5] 初始化 RDK X5 通讯...");
+  rdkInit();
+  
   // 初始化编码器
-  Serial.println("[2/5] 初始化编码器...");
+  Serial.println("[3/5] 初始化编码器...");
   encoder0.init();
   encoder0.enableInterrupts(doEncoder0);
   encoder1.init();
   encoder1.enableInterrupts(doEncoder1);
   
   // 初始化 PWM 驱动
-  Serial.println("[3/5] 初始化 PWM 驱动...");
+  Serial.println("[4/5] 初始化 PWM 驱动...");
   setupPWM();
   
   // 初始化 WiFi 和服务器
-  Serial.println("[4/5] 初始化 WiFi...");
+  Serial.println("[5/5] 初始化 WiFi...");
   setupWiFi();
   setupServer();
   
@@ -358,6 +363,7 @@ void setup() {
 void loop() {
   webSocket.loop();
   server.handleClient();
+  rdkLoop();  // 处理 RDK X5 通讯
   controlLoop();
   delay(1);
 }
